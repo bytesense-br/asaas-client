@@ -70,6 +70,31 @@ export type AsaasSubcontaParams = {
   webhooks?: AsaasWebhookConfig[];
 };
 
+/**
+ * Documento exigido pelo compliance do Asaas para aprovar uma subconta.
+ *
+ * Regra que mais importa: quando `onboardingUrl` vem preenchido, o envio TEM
+ * que acontecer por aquele link — POST no endpoint de upload é rejeitado nesse
+ * caso. Só documento sem `onboardingUrl` aceita envio via API.
+ * Ref: https://docs.asaas.com/docs/detalhamento-do-fluxo-de-aprovacao-de-subcontas
+ */
+export type AsaasDocumentoPendente = {
+  id: string;
+  status: "NOT_SENT" | "PENDING" | "APPROVED" | "REJECTED" | "IGNORED";
+  /** IDENTIFICATION | IDENTIFICATION_SELFIE | MINUTES_OF_ELECTION | CUSTOM | ... */
+  type: string;
+  title: string;
+  description: string;
+  responsible?: { name: string; type: string[] } | null;
+  onboardingUrl?: string | null;
+  onboardingUrlExpirationDate?: string | null;
+};
+
+export type AsaasDocumentosPendentes = {
+  rejectReasons: string | null;
+  data: AsaasDocumentoPendente[];
+};
+
 export type AsaasSubconta = {
   id: string;
   walletId: string;
@@ -141,6 +166,22 @@ export function criarClienteAsaas(config: AsaasConfig) {
       }
 
       return { id: conta.id as string, walletId: conta.walletId as string, apiKey };
+    },
+
+    /**
+     * Documentos que o Asaas ainda espera para aprovar ESTA conta — precisa ser
+     * chamado com a chave da própria subconta, não com a da conta raiz.
+     *
+     * Depois de criar a subconta, esperar pelo menos 15s antes de chamar: a
+     * validação na Receita Federal roda nesse intervalo e a lista vem vazia
+     * (ou incompleta) se a consulta chegar antes.
+     */
+    async listarDocumentosPendentes(): Promise<AsaasDocumentosPendentes> {
+      const resposta = await asaasRequest("GET", "/myAccount/documents");
+      return {
+        rejectReasons: resposta.rejectReasons ?? null,
+        data: (resposta.data ?? []) as AsaasDocumentoPendente[],
+      };
     },
 
     async criarCobrancaPix(params: {
