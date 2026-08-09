@@ -1,6 +1,6 @@
 {
   "name": "asaas-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Cliente compartilhado da API Asaas (Morux, Nortis)",
   "main": "dist/index.js",

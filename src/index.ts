@@ -29,6 +29,57 @@ export type AsaasWebhookPayload = {
   };
 };
 
+/**
+ * Divisão automática do valor recebido entre carteiras Asaas. Calculado sobre o
+ * valor LÍQUIDO da cobrança (depois das taxas do Asaas). Regra da API: a
+ * carteira de quem emite a cobrança nunca entra no split — o emissor recebe
+ * automaticamente o que não foi distribuído.
+ * Ref: https://docs.asaas.com/docs/split-de-pagamentos
+ */
+export type AsaasSplit = {
+  walletId: string;
+  fixedValue?: number;
+  percentualValue?: number;
+};
+
+export type AsaasWebhookConfig = {
+  name: string;
+  url: string;
+  email: string;
+  /** 32-255 caracteres, exigência da API. Volta no header `asaas-access-token`. */
+  authToken: string;
+  events: string[];
+};
+
+export type AsaasSubcontaParams = {
+  name: string;
+  email: string;
+  cpfCnpj: string;
+  mobilePhone: string;
+  /** Faturamento/renda mensal em reais. Obrigatório pela API. */
+  incomeValue: number;
+  address: string;
+  addressNumber: string;
+  province: string; // bairro
+  postalCode: string;
+  companyType?: "MEI" | "LIMITED" | "INDIVIDUAL" | "ASSOCIATION";
+  complement?: string;
+  phone?: string;
+  site?: string;
+  /** Registrados já na criação — evita perder evento entre criar e configurar. */
+  webhooks?: AsaasWebhookConfig[];
+};
+
+export type AsaasSubconta = {
+  id: string;
+  walletId: string;
+  /**
+   * Só existe nesta resposta. O Asaas nunca mais devolve essa chave em
+   * nenhuma consulta — quem chama precisa persistir na hora, num cofre.
+   */
+  apiKey: string;
+};
+
 export function criarClienteAsaas(config: AsaasConfig) {
   const baseUrl = config.baseUrl ?? "https://sandbox.asaas.com/api/v3";
 
@@ -71,12 +122,34 @@ export function criarClienteAsaas(config: AsaasConfig) {
       return cliente.id as string;
     },
 
+    /**
+     * Cria uma subconta vinculada a esta conta (que passa a ser a conta raiz).
+     * Só conta PJ pode criar subconta — conta CPF recebe erro da API.
+     * Ref: https://docs.asaas.com/docs/criacao-de-subcontas
+     */
+    async criarSubconta(params: AsaasSubcontaParams): Promise<AsaasSubconta> {
+      const conta = await asaasRequest("POST", "/accounts", params);
+
+      // A chave vem em `accessToken.apiKey` no contrato documentado, mas
+      // respostas antigas trazem `apiKey` na raiz — aceita as duas.
+      const apiKey: string | undefined = conta.apiKey ?? conta.accessToken?.apiKey;
+      if (!apiKey) {
+        throw new Error(
+          `Asaas criou a subconta ${conta.id} mas não devolveu apiKey. ` +
+            `Essa chave não é recuperável por consulta — use o endpoint de chaves de API da subconta.`
+        );
+      }
+
+      return { id: conta.id as string, walletId: conta.walletId as string, apiKey };
+    },
+
     async criarCobrancaPix(params: {
       clienteId: string;
       valor: number;
       vencimento: string; // YYYY-MM-DD
       descricao: string;
       externalReference?: string;
+      split?: AsaasSplit[];
     }): Promise<AsaasCobranca> {
       const cobranca = await asaasRequest("POST", "/payments", {
         customer: params.clienteId,
@@ -85,6 +158,7 @@ export function criarClienteAsaas(config: AsaasConfig) {
         dueDate: params.vencimento,
         description: params.descricao,
         externalReference: params.externalReference,
+        split: params.split?.length ? params.split : undefined,
       });
 
       const pix = await asaasRequest("GET", `/payments/${cobranca.id}/pixQrCode`);
