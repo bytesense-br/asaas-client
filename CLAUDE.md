@@ -60,7 +60,7 @@ fixada" muda depois de o consumidor realmente ter sido migrado, não na hora do
 bump — e o jeito de conferir é ler o `package.json` dele, não confiar nesta
 tabela.
 
-### O que está parado na fila (v0.6.0 e v0.6.1)
+### O que Morux e Nortis ainda não pegaram (v0.6.0 e v0.6.1)
 
 Correções, sem feature nova: duplicata de cliente quando o CPF vem com máscara,
 CPF vazando na mensagem de erro (e daí no log do consumidor), `buscarPixQrCode`
@@ -70,13 +70,25 @@ motivo de cada uma no `CHANGELOG.md`.
 
 Ao migrar, atenção a duas mudanças de comportamento:
 
-- **Vitta** — `buscarPixQrCode` deixou de estourar quando o `/pixQrCode` falha;
-  agora devolve `pixQrCodeUrl`/`pixCopiaECola` como `undefined`. Se algum
-  `try/catch` de lá usa a exceção como sinal de falha, precisa passar a checar o
-  campo. É o consumidor que mais ganha (a paginação corrigida também é dele) e o
-  único que exige revisão de código antes de trocar a tag.
-- **Todos** — toda requisição passou a ter teto de 30s
-  (`criarClienteAsaas({ timeoutMs })` ajusta).
+- `buscarPixQrCode` deixou de estourar quando o `/pixQrCode` falha; agora devolve
+  `pixQrCodeUrl`/`pixCopiaECola` como `undefined`. Se algum `try/catch` usa a
+  exceção como sinal de falha, precisa passar a checar o campo.
+- Toda requisição passou a ter teto de 30s (`criarClienteAsaas({ timeoutMs })`
+  ajusta).
+
+**Duplicata de cliente — quem está exposto:** só quem manda `cpfCnpj` com
+máscara. O Vitta já normalizava por conta própria (`limparCpfCnpj`), então nunca
+foi afetado. Ao migrar Morux e Nortis, olhar como cada um monta esse campo antes
+de assumir que o bug os atingia.
+
+**O que a migração do Vitta ensinou** (2026-08-12, o único feito até aqui): o
+ganho real estava em `buscarPixQrCode` dentro de `assinar/actions.ts`. Um
+`/pixQrCode` que falhasse derrubava o `catch` do fluxo inteiro e a tela dizia
+"não foi possível criar a assinatura" — com a assinatura já criada, o registro
+gravado e o cupom já incrementado. O usuário tentava de novo e duplicava tudo.
+A correção transforma isso em `ok: true` com o `invoiceUrl` de fallback. Vale
+procurar o mesmo padrão no Morux e no Nortis: **`catch` amplo em volta de um
+fluxo que já teve efeito colateral** é onde essa classe de correção paga.
 
 Nada disso foi exercitado contra a API real — ver "Estado de teste" abaixo.
 
