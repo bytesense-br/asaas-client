@@ -6,6 +6,16 @@
 export interface AsaasConfig {
   apiKey: string;
   baseUrl?: string;
+  /**
+   * Teto por requisição, em milissegundos. Padrão 30s.
+   *
+   * Sem isso o `fetch` fica preso no default do runtime (~300s no undici do
+   * Node, indefinido em edge). A tolerância a falha das buscas complementares
+   * protege contra *erro*, não contra *lentidão*: um `/pixQrCode` pendurado
+   * segura o `criarCobranca` inteiro apesar do `.catch`, que é justamente o
+   * cenário de cobrança órfã que se quer evitar.
+   */
+  timeoutMs?: number;
 }
 
 export type AsaasCobranca = {
@@ -223,6 +233,17 @@ export type AsaasSubconta = {
 
 export function criarClienteAsaas(config: AsaasConfig) {
   const baseUrl = config.baseUrl ?? "https://sandbox.asaas.com/api/v3";
+  const timeoutMs = config.timeoutMs ?? 30_000;
+
+  /**
+   * A query fica de fora da mensagem de erro: é onde viajam CPF/CNPJ, e quem
+   * loga a exceção é o consumidor (esta biblioteca não loga). Sem isso um erro
+   * em `/customers?cpfCnpj=...` deposita dado pessoal no log da aplicação.
+   */
+  const semQuery = (path: string) => {
+    const corte = path.indexOf("?");
+    return corte === -1 ? path : `${path.slice(0, corte)}?…`;
+  };
 
   async function asaasRequest(method: string, path: string, body?: unknown) {
     if (!config.apiKey) throw new Error("Asaas apiKey não configurada.");
@@ -234,12 +255,17 @@ export function criarClienteAsaas(config: AsaasConfig) {
         access_token: config.apiKey,
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Asaas ${method} ${path} → ${res.status}: ${text}`);
+      throw new Error(`Asaas ${method} ${semQuery(path)} → ${res.status}: ${text}`);
     }
+
+    // 204 e afins não têm corpo: `res.json()` estouraria com "Unexpected end of
+    // JSON input" num DELETE que na verdade deu certo.
+    if (res.status === 204 || res.headers.get("content-length") === "0") return {};
     return res.json();
   }
 
@@ -287,18 +313,30 @@ export function criarClienteAsaas(config: AsaasConfig) {
   }
 
   return {
+    /**
+     * O `cpfCnpj` é normalizado para só dígitos antes de buscar E antes de
+     * criar. A busca do Asaas é literal: sem isso `"123.456.789-00"` não acha o
+     * cliente cadastrado como `"12345678900"` e um segundo cadastro é criado
+     * para a mesma pessoa — exatamente a duplicata que esta função existe para
+     * evitar.
+     */
     async criarOuBuscarCliente(params: {
       nome: string;
       cpfCnpj: string;
       email?: string;
       telefone?: string;
     }): Promise<string> {
-      const lista = await asaasRequest("GET", `/customers?cpfCnpj=${params.cpfCnpj}`);
+      const documento = params.cpfCnpj.replace(/\D/g, "");
+
+      const lista = await asaasRequest(
+        "GET",
+        `/customers?cpfCnpj=${encodeURIComponent(documento)}`
+      );
       if (lista.data?.length > 0) return lista.data[0].id as string;
 
       const cliente = await asaasRequest("POST", "/customers", {
         name: params.nome,
-        cpfCnpj: params.cpfCnpj,
+        cpfCnpj: documento,
         email: params.email,
         mobilePhone: params.telefone,
         notificationDisabled: false,
@@ -407,21 +445,31 @@ export function criarClienteAsaas(config: AsaasConfig) {
      */
     async buscarDadosCobranca(paymentId: string): Promise<AsaasCobranca> {
       const pagamento = await asaasRequest("GET", `/payments/${paymentId}`);
-      return complementos(pagamento, pagamento.billingType as AsaasBillingType);
+      // Sem `billingType` na resposta, `UNDEFINED` faz buscar PIX e boleto —
+      // mais seguro que cair no caso em que nenhum complemento é buscado e a
+      // cobrança volta sem QR e sem linha digitável, silenciosamente.
+      return complementos(pagamento, (pagamento.billingType as AsaasBillingType) ?? "UNDEFINED");
     },
 
+    /**
+     * A busca do QR é tolerante a falha, igual à de `complementos`: o título já
+     * existe quando esta função roda (o fluxo de assinatura chega aqui via
+     * `listarCobrancasDaAssinatura`), e estourar por causa do complemento
+     * deixaria o consumidor sem a referência da cobrança. O `GET /payments/{id}`
+     * continua estourando — sem ele não há o que devolver.
+     */
     async buscarPixQrCode(paymentId: string): Promise<AsaasCobranca> {
       const [pagamento, pix] = await Promise.all([
         asaasRequest("GET", `/payments/${paymentId}`),
-        asaasRequest("GET", `/payments/${paymentId}/pixQrCode`),
+        asaasRequest("GET", `/payments/${paymentId}/pixQrCode`).catch(() => null),
       ]);
 
       return {
         id: pagamento.id,
         status: pagamento.status,
         invoiceUrl: pagamento.invoiceUrl,
-        pixQrCodeUrl: pix.encodedImage ? `data:image/png;base64,${pix.encodedImage}` : undefined,
-        pixCopiaECola: pix.payload,
+        pixQrCodeUrl: pix?.encodedImage ? `data:image/png;base64,${pix.encodedImage}` : undefined,
+        pixCopiaECola: pix?.payload,
         dueDate: pagamento.dueDate,
         value: pagamento.value,
       };
@@ -539,9 +587,25 @@ export function criarClienteAsaas(config: AsaasConfig) {
       assinaturaId: string,
       status?: string
     ): Promise<AsaasCobrancaResumo[]> {
-      const query = status ? `?status=${encodeURIComponent(status)}` : "";
-      const r = await asaasRequest("GET", `/subscriptions/${assinaturaId}/payments${query}`);
-      return (r.data ?? []) as AsaasCobrancaResumo[];
+      const LIMITE = 100;
+      const cobrancas: AsaasCobrancaResumo[] = [];
+
+      // Paginação: sem isto só a primeira página voltava, e uma assinatura
+      // antiga devolvia histórico truncado sem nenhum sinal de que faltou algo.
+      // Se a API não expuser `hasMore`, o laço para na primeira volta e o
+      // comportamento fica idêntico ao de antes.
+      for (let offset = 0; ; offset += LIMITE) {
+        const filtro = status ? `&status=${encodeURIComponent(status)}` : "";
+        const r = await asaasRequest(
+          "GET",
+          `/subscriptions/${assinaturaId}/payments?limit=${LIMITE}&offset=${offset}${filtro}`
+        );
+
+        const pagina = (r.data ?? []) as AsaasCobrancaResumo[];
+        cobrancas.push(...pagina);
+
+        if (r.hasMore !== true || pagina.length === 0) return cobrancas;
+      }
     },
 
     /**
@@ -592,7 +656,9 @@ export function criarClienteAsaas(config: AsaasConfig) {
      */
     async cancelarAssinatura(assinaturaId: string): Promise<{ deleted: boolean; id: string }> {
       const r = await asaasRequest("DELETE", `/subscriptions/${assinaturaId}`);
-      return { deleted: !!r.deleted, id: r.id as string };
+      // `asaasRequest` já estourou se não foi 2xx. Chegar aqui com corpo vazio
+      // (204) significa removida — só um `deleted: false` explícito desmente.
+      return { deleted: r.deleted !== false, id: (r.id as string) ?? assinaturaId };
     },
   };
 }
