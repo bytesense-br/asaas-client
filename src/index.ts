@@ -14,6 +14,14 @@ export type AsaasCobranca = {
   invoiceUrl: string;
   pixQrCodeUrl?: string;
   pixCopiaECola?: string;
+  /** PDF do boleto registrado no banco emissor. Só quando a forma de pagamento inclui boleto. */
+  boletoUrl?: string;
+  /** Linha digitável de 47 dígitos, já formatada pelo Asaas. */
+  linhaDigitavel?: string;
+  /** Código de barras de 44 dígitos — o que a ficha de compensação desenha. */
+  codigoBarras?: string;
+  /** Identificação do título no banco emissor. */
+  nossoNumero?: string;
   dueDate: string;
   value: number;
 };
@@ -235,6 +243,49 @@ export function criarClienteAsaas(config: AsaasConfig) {
     return res.json();
   }
 
+  const aceitaPix = (forma: AsaasBillingType) => forma === "PIX" || forma === "UNDEFINED";
+  const aceitaBoleto = (forma: AsaasBillingType) => forma === "BOLETO" || forma === "UNDEFINED";
+
+  /**
+   * Monta o `AsaasCobranca` a partir do pagamento cru, buscando os dados que o
+   * Asaas só entrega em endpoint separado. Cada busca é tolerante a falha
+   * porque o pagamento em si já existe — ver `criarCobranca`.
+   */
+  async function complementos(
+    pagamento: {
+      id: string;
+      status: string;
+      invoiceUrl: string;
+      dueDate: string;
+      value: number;
+      bankSlipUrl?: string;
+    },
+    forma: AsaasBillingType
+  ): Promise<AsaasCobranca> {
+    const [pix, boleto] = await Promise.all([
+      aceitaPix(forma)
+        ? asaasRequest("GET", `/payments/${pagamento.id}/pixQrCode`).catch(() => null)
+        : null,
+      aceitaBoleto(forma)
+        ? asaasRequest("GET", `/payments/${pagamento.id}/identificationField`).catch(() => null)
+        : null,
+    ]);
+
+    return {
+      id: pagamento.id,
+      status: pagamento.status,
+      invoiceUrl: pagamento.invoiceUrl,
+      pixQrCodeUrl: pix?.encodedImage ? `data:image/png;base64,${pix.encodedImage}` : undefined,
+      pixCopiaECola: pix?.payload,
+      boletoUrl: aceitaBoleto(forma) ? pagamento.bankSlipUrl : undefined,
+      linhaDigitavel: boleto?.identificationField,
+      codigoBarras: boleto?.barCode,
+      nossoNumero: boleto?.nossoNumero,
+      dueDate: pagamento.dueDate,
+      value: pagamento.value,
+    };
+  }
+
   return {
     async criarOuBuscarCliente(params: {
       nome: string;
@@ -292,6 +343,43 @@ export function criarClienteAsaas(config: AsaasConfig) {
       };
     },
 
+    /**
+     * Cria uma cobrança avulsa. `formaPagamento` decide o que o pagador pode
+     * usar — `UNDEFINED` deixa a mesma cobrança pagável por PIX **ou** boleto
+     * (o pagador escolhe na fatura), que é o caso de quem ainda paga no banco.
+     *
+     * O QR do PIX e a linha digitável do boleto vêm de endpoints separados,
+     * buscados aqui conforme a forma escolhida. Se um deles falhar, a cobrança
+     * volta sem aquele campo em vez de estourar: o título já existe no Asaas
+     * nesse ponto, e derrubar tudo deixaria uma cobrança órfã. Para recuperar
+     * depois, use `buscarDadosCobranca`.
+     */
+    async criarCobranca(params: {
+      clienteId: string;
+      valor: number;
+      vencimento: string; // YYYY-MM-DD
+      descricao: string;
+      /** Padrão PIX, por compatibilidade com `criarCobrancaPix`. */
+      formaPagamento?: AsaasBillingType;
+      externalReference?: string;
+      split?: AsaasSplit[];
+    }): Promise<AsaasCobranca> {
+      const forma = params.formaPagamento ?? "PIX";
+
+      const cobranca = await asaasRequest("POST", "/payments", {
+        customer: params.clienteId,
+        billingType: forma,
+        value: params.valor,
+        dueDate: params.vencimento,
+        description: params.descricao,
+        externalReference: params.externalReference,
+        split: params.split?.length ? params.split : undefined,
+      });
+
+      return complementos(cobranca, forma);
+    },
+
+    /** Atalho histórico de `criarCobranca` com forma PIX — mantido para não quebrar quem já chama. */
     async criarCobrancaPix(params: {
       clienteId: string;
       valor: number;
@@ -310,17 +398,16 @@ export function criarClienteAsaas(config: AsaasConfig) {
         split: params.split?.length ? params.split : undefined,
       });
 
-      const pix = await asaasRequest("GET", `/payments/${cobranca.id}/pixQrCode`);
+      return complementos(cobranca, "PIX");
+    },
 
-      return {
-        id: cobranca.id,
-        status: cobranca.status,
-        invoiceUrl: cobranca.invoiceUrl,
-        pixQrCodeUrl: pix.encodedImage ? `data:image/png;base64,${pix.encodedImage}` : undefined,
-        pixCopiaECola: pix.payload,
-        dueDate: cobranca.dueDate,
-        value: cobranca.value,
-      };
+    /**
+     * Relê uma cobrança existente com tudo que a forma de pagamento dela
+     * oferece — QR do PIX, linha digitável, código de barras e PDF do boleto.
+     */
+    async buscarDadosCobranca(paymentId: string): Promise<AsaasCobranca> {
+      const pagamento = await asaasRequest("GET", `/payments/${paymentId}`);
+      return complementos(pagamento, pagamento.billingType as AsaasBillingType);
     },
 
     async buscarPixQrCode(paymentId: string): Promise<AsaasCobranca> {
