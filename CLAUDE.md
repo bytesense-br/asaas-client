@@ -27,11 +27,27 @@ histórico uma da outra.
 |---|---|---|---|---|
 | Morux | `C:\Projeto Morux\web` | v0.5.0 | v0.6.1 | cobrança avulsa (PIX + boleto), subcontas, split, webhook |
 | Nortis | `C:\Projeto Nortis` | v0.1.0 | v0.6.1 | cobrança PIX, webhook |
-| Vitta | `C:\projeto Vitta\vitta_web` | v0.4.0 | v0.6.1 | assinaturas recorrentes, cartão |
+| Vitta | `C:\projeto Vitta\vitta_web` | **v0.6.1** | v0.6.1 | assinaturas recorrentes, cartão |
 
 "Versão fixada" é o que está no `package.json` do consumidor **hoje** — conferido
 em 2026-08-12. "Disponível" é a última tag publicada aqui. As duas colunas
-divergindo é o estado normal: **nenhum dos três migrou para a v0.6.x.**
+divergindo é o estado normal. **Vitta migrado para a v0.6.1 em 2026-08-12**
+(`tsc --noEmit` e `next build` passando); Morux e Nortis seguem atrasados.
+
+⚠️ **`npm install` sozinho NÃO troca a versão.** Com dependência de git, o npm vê
+o `resolved` fixo no `package-lock.json` e considera a dependência satisfeita:
+trocar a tag no `package.json` e rodar `npm install` deixa o código **antigo** em
+`node_modules`, sem erro nenhum. Force com:
+
+```
+npm install "asaas-client@github:bytesense-br/asaas-client#vX.Y.Z"
+```
+
+E confira que pegou, antes de acreditar que migrou:
+
+```
+node -p "require('asaas-client/package.json').version"
+```
 
 Cada consumidor fixa a versão no `package.json`
 (`github:bytesense-br/asaas-client#v0.4.0`). Isso é deliberado: sem pin, um
@@ -91,18 +107,29 @@ extração — e o Nortis e o Vitta não recebem a correção.
 Nada aqui foi exercitado contra a API real do Asaas em produção. O que existe:
 
 - Morux validou PIX ponta a ponta **em sandbox**, com webhook real (v0.1.0).
-- Subconta, split e boleto registrado **nunca rodaram nem em sandbox** —
-  dependem de a conta raiz PJ da ByteSense existir. Validados só por tipagem,
-  build e leitura do contrato documentado.
-- Assinaturas e cartão: idem, sem execução real.
+- **Boleto registrado rodou de verdade contra o sandbox em 2026-08-12** (v0.5.0):
+  `criarCobranca` com `UNDEFINED` devolveu `linhaDigitavel`, `codigoBarras`,
+  `nossoNumero` e `boletoUrl` preenchidos pelo endpoint `identificationField`,
+  junto do PIX. O contrato dos campos de boleto está confirmado, não presumido.
+- Subconta e split **nunca rodaram** — dependem de conta PJ. Em 2026-08-12,
+  `POST /accounts` no sandbox voltou **403: "Contas de pessoa física (CPF) não
+  podem criar subcontas"**. Ajustar "Modelo da operação" para "BaaS do Asaas" no
+  painel é necessário, mas não contorna o CPF.
+- Assinaturas e cartão: sem execução real.
 - Correções da v0.6.x: verificadas com `fetch` stubado (30 casos — normalização
   de CPF, redação da mensagem de erro, tolerância a falha, paginação, `204`,
   timeout). Prova a lógica, não o contrato.
 
-**Não há chave de sandbox do Asaas disponível** (confirmado em 2026-08-12), então
-"roda em sandbox para conferir" não é um caminho aberto — não adianta propor.
-O que dá para fazer é teste com `fetch` stubado, e o que ele nunca cobre é o
-formato real da resposta do Asaas. Quando o formato importar, a fonte é a doc:
+**Existe chave de sandbox** — está em `C:\Projeto Morux\web\.env.local`
+(`ASAAS_API_KEY`, prefixo `$aact_hmlg…`, com `ASAAS_BASE_URL` apontando para
+`https://sandbox.asaas.com/api/v3`). Uma versão anterior deste arquivo afirmava
+o contrário; foi corrigido em 2026-08-12 depois de rodar contra o sandbox de
+fato. Dois utilitários do Morux exercitam o pacote sem precisar de conta PJ:
+`web/scripts/asaas-diagnostico.ts` (read-only: tipo da conta, situação
+cadastral, carteira) e `web/scripts/asaas-qa-local.ts --emitir` (emite de
+verdade apontando um condomínio de QA para a chave de sandbox).
+
+Para o que ainda não dá para executar, a fonte é a doc:
 [listagem e paginação](https://docs.asaas.com/reference/listagem-e-paginacao) já
 resolveu um caso assim — confirmou `hasMore`, o teto `limit=100`, e revelou que o
 `limit` padrão é 10, o que tornava o truncamento do histórico bem pior do que se
