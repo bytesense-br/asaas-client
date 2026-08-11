@@ -590,11 +590,15 @@ export function criarClienteAsaas(config: AsaasConfig) {
       const LIMITE = 100;
       const cobrancas: AsaasCobrancaResumo[] = [];
 
-      // Paginação: sem isto só a primeira página voltava, e uma assinatura
-      // antiga devolvia histórico truncado sem nenhum sinal de que faltou algo.
-      // Se a API não expuser `hasMore`, o laço para na primeira volta e o
-      // comportamento fica idêntico ao de antes.
-      for (let offset = 0; ; offset += LIMITE) {
+      // Paginação: sem isto só a primeira página voltava — e sem `limit`
+      // explícito o padrão da API é 10, então o histórico era truncado na
+      // décima cobrança sem nenhum sinal de que faltou algo.
+      //
+      // `offset` é posição de ITEM, não índice de página, e avança pelo tamanho
+      // da página recebida em vez de um passo fixo: se a API devolver uma página
+      // curta com `hasMore`, um passo fixo pularia os itens da diferença.
+      // Ref: https://docs.asaas.com/reference/listagem-e-paginacao
+      for (let offset = 0; ; ) {
         const filtro = status ? `&status=${encodeURIComponent(status)}` : "";
         const r = await asaasRequest(
           "GET",
@@ -603,6 +607,7 @@ export function criarClienteAsaas(config: AsaasConfig) {
 
         const pagina = (r.data ?? []) as AsaasCobrancaResumo[];
         cobrancas.push(...pagina);
+        offset += pagina.length;
 
         if (r.hasMore !== true || pagina.length === 0) return cobrancas;
       }

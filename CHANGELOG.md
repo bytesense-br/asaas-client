@@ -8,6 +8,26 @@ decidido e não reescreve o que está de pé.
 Formato: versão, data, o que mudou, **por quê**, e o que o consumidor precisa
 fazer se atualizar.
 
+## 0.6.1 — 2026-08-12
+
+- `listarCobrancasDaAssinatura` avança o `offset` pelo tamanho da página
+  recebida, em vez de um passo fixo de 100.
+
+**Por quê**: a paginação da v0.6.0 foi escrita sem confirmação do contrato. A doc
+([listagem e paginação](https://docs.asaas.com/reference/listagem-e-paginacao))
+confirma o campo `hasMore` e o teto de `limit=100`, mas `offset` é posição de
+**item**, não índice de página — e nada garante que toda página venha cheia. Com
+passo fixo, uma página curta com `hasMore` faria o `offset` saltar por cima dos
+itens da diferença, que é exatamente o truncamento silencioso que a v0.6.0 foi
+corrigir.
+
+A mesma leitura da doc mostrou que o bug original era pior do que se estimava: o
+`limit` padrão da API é **10**, não 100. Antes da v0.6.0 o histórico de uma
+assinatura era cortado na décima cobrança — menos de um ano numa mensal.
+
+**Ao atualizar**: nada muda para quem já está na v0.6.0. Não há mudança de
+assinatura nem de comportamento observável fora do cenário de página curta.
+
 ## 0.6.0 — 2026-08-12
 
 Correções encontradas em varredura do código, sem feature nova.
