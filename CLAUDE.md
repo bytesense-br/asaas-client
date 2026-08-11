@@ -23,11 +23,15 @@ histórico uma da outra.
 
 ## Quem consome, e em que versão
 
-| Projeto | Caminho | Versão fixada | Usa |
-|---|---|---|---|
-| Morux | `C:\Projeto Morux\web` | v0.5.0 | cobrança avulsa (PIX + boleto), subcontas, split, webhook |
-| Nortis | `C:\Projeto Nortis` | v0.1.0 | cobrança PIX, webhook |
-| Vitta | `C:\projeto Vitta\vitta_web` | v0.4.0 | assinaturas recorrentes, cartão |
+| Projeto | Caminho | Versão fixada | Disponível | Usa |
+|---|---|---|---|---|
+| Morux | `C:\Projeto Morux\web` | v0.5.0 | v0.6.1 | cobrança avulsa (PIX + boleto), subcontas, split, webhook |
+| Nortis | `C:\Projeto Nortis` | v0.1.0 | v0.6.1 | cobrança PIX, webhook |
+| Vitta | `C:\projeto Vitta\vitta_web` | v0.4.0 | v0.6.1 | assinaturas recorrentes, cartão |
+
+"Versão fixada" é o que está no `package.json` do consumidor **hoje** — conferido
+em 2026-08-12. "Disponível" é a última tag publicada aqui. As duas colunas
+divergindo é o estado normal: **nenhum dos três migrou para a v0.6.x.**
 
 Cada consumidor fixa a versão no `package.json`
 (`github:bytesense-br/asaas-client#v0.4.0`). Isso é deliberado: sem pin, um
@@ -35,8 +39,30 @@ Cada consumidor fixa a versão no `package.json`
 que ninguém decidiu adotar. **Atualizar é ato explícito** — trocar a tag,
 reinstalar e testar aquele produto.
 
-Ao publicar uma versão nova, atualize a tabela acima só depois de o consumidor
-realmente ter sido migrado, não na hora do bump.
+Ao publicar uma versão nova, mexa só na coluna "Disponível". A coluna "Versão
+fixada" muda depois de o consumidor realmente ter sido migrado, não na hora do
+bump — e o jeito de conferir é ler o `package.json` dele, não confiar nesta
+tabela.
+
+### O que está parado na fila (v0.6.0 e v0.6.1)
+
+Correções, sem feature nova: duplicata de cliente quando o CPF vem com máscara,
+CPF vazando na mensagem de erro (e daí no log do consumidor), `buscarPixQrCode`
+estourando com o título já criado, histórico de assinatura truncado na décima
+cobrança, `204` quebrando `cancelarAssinatura`, e ausência de timeout. Detalhe e
+motivo de cada uma no `CHANGELOG.md`.
+
+Ao migrar, atenção a duas mudanças de comportamento:
+
+- **Vitta** — `buscarPixQrCode` deixou de estourar quando o `/pixQrCode` falha;
+  agora devolve `pixQrCodeUrl`/`pixCopiaECola` como `undefined`. Se algum
+  `try/catch` de lá usa a exceção como sinal de falha, precisa passar a checar o
+  campo. É o consumidor que mais ganha (a paginação corrigida também é dele) e o
+  único que exige revisão de código antes de trocar a tag.
+- **Todos** — toda requisição passou a ter teto de 30s
+  (`criarClienteAsaas({ timeoutMs })` ajusta).
+
+Nada disso foi exercitado contra a API real — ver "Estado de teste" abaixo.
 
 ## Invariantes — o que não pode quebrar
 
@@ -69,6 +95,18 @@ Nada aqui foi exercitado contra a API real do Asaas em produção. O que existe:
   dependem de a conta raiz PJ da ByteSense existir. Validados só por tipagem,
   build e leitura do contrato documentado.
 - Assinaturas e cartão: idem, sem execução real.
+- Correções da v0.6.x: verificadas com `fetch` stubado (30 casos — normalização
+  de CPF, redação da mensagem de erro, tolerância a falha, paginação, `204`,
+  timeout). Prova a lógica, não o contrato.
+
+**Não há chave de sandbox do Asaas disponível** (confirmado em 2026-08-12), então
+"roda em sandbox para conferir" não é um caminho aberto — não adianta propor.
+O que dá para fazer é teste com `fetch` stubado, e o que ele nunca cobre é o
+formato real da resposta do Asaas. Quando o formato importar, a fonte é a doc:
+[listagem e paginação](https://docs.asaas.com/reference/listagem-e-paginacao) já
+resolveu um caso assim — confirmou `hasMore`, o teto `limit=100`, e revelou que o
+`limit` padrão é 10, o que tornava o truncamento do histórico bem pior do que se
+supunha.
 
 Ao mexer em algo desta lista, não presuma que o comportamento atual já foi
 confirmado na prática — o contrato veio da documentação.
