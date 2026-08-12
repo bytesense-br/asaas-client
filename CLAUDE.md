@@ -62,11 +62,17 @@ tabela.
 
 ### O que Morux e Nortis ainda não pegaram (v0.6.0 e v0.6.1)
 
-Correções, sem feature nova: duplicata de cliente quando o CPF vem com máscara,
-CPF vazando na mensagem de erro (e daí no log do consumidor), `buscarPixQrCode`
-estourando com o título já criado, histórico de assinatura truncado na décima
-cobrança, `204` quebrando `cancelarAssinatura`, e ausência de timeout. Detalhe e
-motivo de cada uma no `CHANGELOG.md`.
+Correções, sem feature nova: CPF vazando na mensagem de erro (e daí no log do
+consumidor), `buscarPixQrCode` estourando com o título já criado, histórico de
+assinatura truncado na décima cobrança, e ausência de timeout. Detalhe e motivo
+de cada uma no `CHANGELOG.md`.
+
+Duas que a v0.6.0 vendeu como conserto e **não eram** (medido em sandbox,
+2026-08-12 — ver "Correção ao registro" no `CHANGELOG.md`): a **duplicata de
+cliente por CPF mascarado não existe** (o Asaas normaliza dos dois lados) e o
+**`204` não acontece** em `DELETE /subscriptions` (devolve 200 com corpo). O
+código das duas continua no pacote como defesa, mas não conte isso como motivo
+para migrar ninguém.
 
 Ao migrar, atenção a duas mudanças de comportamento:
 
@@ -76,10 +82,31 @@ Ao migrar, atenção a duas mudanças de comportamento:
 - Toda requisição passou a ter teto de 30s (`criarClienteAsaas({ timeoutMs })`
   ajusta).
 
-**Duplicata de cliente — quem está exposto:** só quem manda `cpfCnpj` com
-máscara. O Vitta já normalizava por conta própria (`limparCpfCnpj`), então nunca
-foi afetado. Ao migrar Morux e Nortis, olhar como cada um monta esse campo antes
-de assumir que o bug os atingia.
+**O que o Morux ganha de verdade ao migrar** (medido em sandbox, 2026-08-12, com
+a v0.5.0 dele ao lado da v0.6.1):
+
+- **Vazamento de CPF no log — real e vivo.** `fatura.ts:195` faz
+  `console.error(…, err)` do erro do Asaas. Se o `GET /customers?cpfCnpj=…`
+  falhar (401, 5xx, rede), a v0.5.0 grava `…?cpfCnpj=123.456.789-09` no log da
+  aplicação; a v0.6.1 grava `…?…`. Confirmado forçando 401 nas duas versões.
+- **Timeout — o de maior valor aqui.** A v0.5.0 não tem nenhum
+  (`grep AbortSignal` → 0). `gerar-cobrancas.ts:102` emite fatura por unidade num
+  `for` **sequencial**; num condomínio de 200 unidades, uma requisição pendurada
+  segura o lote inteiro. É o cenário que o teto de 30s existe para cortar.
+- **`buscarPixQrCode` — irrelevante para o Morux.** Ele nunca chama essa função
+  nem `buscarDadosCobranca`; usa `criarCobranca`, cujos complementos **já eram
+  tolerantes na v0.5.0** (`grep -c "catch(() => null)"` → 2). O ganho que pagou
+  no Vitta não se repete aqui.
+- **Duplicata de cliente — não se aplica.** O Morux manda o CPF mascarado
+  (`CpfInput` → `proprietarios/actions.ts:28` grava cru → `fatura.ts:142`
+  repassa), que era exatamente o perfil "exposto" que se supunha. Rodando as duas
+  versões contra o sandbox, ambas devolvem o **mesmo** `id`: não havia bug.
+
+**Restrição operacional que vale para o Morux, independente de versão:**
+`fatura.ts:156` emite com `formaPagamento: "UNDEFINED"`, que tem **mínimo de
+R$ 30,00** no Asaas. Uma fatura cujo total fique abaixo disso é recusada com 400.
+Condomínio inteiro raramente cai aí, mas uma unidade com uma única cobrança
+pequena, sim.
 
 **O que a migração do Vitta ensinou** (2026-08-12, o único feito até aqui): o
 ganho real estava em `buscarPixQrCode` dentro de `assinar/actions.ts`. Um
@@ -88,9 +115,12 @@ ganho real estava em `buscarPixQrCode` dentro de `assinar/actions.ts`. Um
 gravado e o cupom já incrementado. O usuário tentava de novo e duplicava tudo.
 A correção transforma isso em `ok: true` com o `invoiceUrl` de fallback. Vale
 procurar o mesmo padrão no Morux e no Nortis: **`catch` amplo em volta de um
-fluxo que já teve efeito colateral** é onde essa classe de correção paga.
+fluxo que já teve efeito colateral** é onde essa classe de correção paga. No
+Morux esse padrão existe (`fatura.ts:194`), mas o caminho dele já era tolerante
+na v0.5.0 — por isso o ganho lá é outro (log e timeout), não este.
 
-Nada disso foi exercitado contra a API real — ver "Estado de teste" abaixo.
+Boa parte disso já foi exercitada contra o sandbox — ver "Estado de teste"
+abaixo, que separa o que foi medido do que segue vindo da documentação.
 
 ## Invariantes — o que não pode quebrar
 
