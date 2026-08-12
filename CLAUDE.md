@@ -116,7 +116,9 @@ extração — e o Nortis e o Vitta não recebem a correção.
 
 ## Estado de teste
 
-Nada aqui foi exercitado contra a API real do Asaas em produção. O que existe:
+Nada aqui foi exercitado contra a API real do Asaas **em produção**. Contra o
+**sandbox**, boa parte já rodou — a lista abaixo diz exatamente o quê, e o que
+ainda é presunção:
 
 - Morux validou PIX ponta a ponta **em sandbox**, com webhook real (v0.1.0).
 - **Boleto registrado rodou de verdade contra o sandbox em 2026-08-12** (v0.5.0):
@@ -127,10 +129,36 @@ Nada aqui foi exercitado contra a API real do Asaas em produção. O que existe:
   `POST /accounts` no sandbox voltou **403: "Contas de pessoa física (CPF) não
   podem criar subcontas"**. Ajustar "Modelo da operação" para "BaaS do Asaas" no
   painel é necessário, mas não contorna o CPF.
-- Assinaturas e cartão: sem execução real.
-- Correções da v0.6.x: verificadas com `fetch` stubado (30 casos — normalização
-  de CPF, redação da mensagem de erro, tolerância a falha, paginação, `204`,
-  timeout). Prova a lógica, não o contrato.
+- **Assinaturas rodaram contra o sandbox em 2026-08-12** (v0.6.1): `criarAssinatura`
+  PIX/`MONTHLY` volta `ACTIVE` e **já nasce com a primeira cobrança**, então
+  `listarCobrancasDaAssinatura` devolve 1 item na hora — o `if (!primeira)` dos
+  consumidores é defesa, não caminho comum. `buscarPixQrCode` nessa cobrança
+  devolve copia-e-cola válido, e `cancelarAssinatura` volta
+  `{ deleted: true, id }`.
+- **A tolerância a falha foi provada contra a API real** (v0.6.1), não só em stub:
+  numa cobrança `CREDIT_CARD` o `GET /payments/{id}/pixQrCode` responde
+  **400 "Esta cobrança não permite pagamentos via Pix."** `buscarPixQrCode`
+  resolve com `pixCopiaECola`/`pixQrCodeUrl` em `undefined` e `invoiceUrl` +
+  `dueDate` preenchidos. Em v0.4.0 esse mesmo caso virava exceção.
+- Correções da v0.6.x: 30 casos com `fetch` stubado (normalização de CPF, redação
+  da mensagem de erro, tolerância, paginação, `204`, timeout) **mais** execução
+  real em sandbox das correções 2, 3 e 7. A redação da query foi confirmada de
+  verdade: um `POST /customers` com CPF inválido devolve mensagem sem o CPF.
+
+**Duas coisas que só a execução real mostrou** — e que contrariam o que se supunha:
+
+- `DELETE /subscriptions/{id}` devolve **200 com corpo** `{"deleted":true,"id":…}`,
+  **não `204`**. A defesa contra corpo vazio na v0.6.0 é preventiva, não conserto
+  de bug ativo: `cancelarAssinatura` nunca esteve quebrado nesse endpoint.
+- `formaPagamento: "UNDEFINED"` tem **valor mínimo de R$ 30,00** — abaixo disso o
+  `POST /payments` volta 400 ("O valor mínimo para cobranças com a forma de
+  pagamento Pergunte ao Cliente é R$ 30,00"). Não vale para `PIX` nem `BOLETO`
+  puros. Quem usa `UNDEFINED` com ticket baixo precisa saber disso.
+
+E uma que **desmente uma suposição minha**: o `/pixQrCode` responde 200 com PIX
+válido até para cobrança `BOLETO`. O Asaas gera PIX para quase tudo — o único
+caso de falha encontrado foi `CREDIT_CARD`. O cenário do bug do Vitta é mais raro
+do que a v0.6.0 supunha, mas continua real (timeout, 5xx, rede).
 
 **Existe chave de sandbox** — está em `C:\Projeto Morux\web\.env.local`
 (`ASAAS_API_KEY`, prefixo `$aact_hmlg…`, com `ASAAS_BASE_URL` apontando para
@@ -145,7 +173,13 @@ Para o que ainda não dá para executar, a fonte é a doc:
 [listagem e paginação](https://docs.asaas.com/reference/listagem-e-paginacao) já
 resolveu um caso assim — confirmou `hasMore`, o teto `limit=100`, e revelou que o
 `limit` padrão é 10, o que tornava o truncamento do histórico bem pior do que se
-supunha.
+supunha. Em 2026-08-12 a resposta real confirmou o envelope:
+`{ hasMore, totalCount, limit, offset }` em
+`GET /subscriptions/{id}/payments`. O que **não** foi exercitado é a virada de
+página — a assinatura de teste tinha 1 cobrança, então `hasMore: false`. O laço
+de `listarCobrancasDaAssinatura` com mais de 100 itens continua sem execução real.
 
-Ao mexer em algo desta lista, não presuma que o comportamento atual já foi
-confirmado na prática — o contrato veio da documentação.
+O que ainda não rodou contra API nenhuma: **subconta e split** (barrados por conta
+CPF), **cartão de crédito de fato** (a cobrança `CREDIT_CARD` foi criada, mas
+nenhum pagamento foi tokenizado ou capturado) e o **timeout** de 30s, que só foi
+provado em stub. Ao mexer nesses, o contrato vem da documentação, não de prova.
