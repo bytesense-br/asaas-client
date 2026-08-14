@@ -155,10 +155,24 @@ ainda é presunção:
   `criarCobranca` com `UNDEFINED` devolveu `linhaDigitavel`, `codigoBarras`,
   `nossoNumero` e `boletoUrl` preenchidos pelo endpoint `identificationField`,
   junto do PIX. O contrato dos campos de boleto está confirmado, não presumido.
-- Subconta e split **nunca rodaram** — dependem de conta PJ. Em 2026-08-12,
-  `POST /accounts` no sandbox voltou **403: "Contas de pessoa física (CPF) não
-  podem criar subcontas"**. Ajustar "Modelo da operação" para "BaaS do Asaas" no
-  painel é necessário, mas não contorna o CPF.
+- **Subconta e split rodaram de verdade contra o sandbox em 2026-08-14.** O 403
+  de 2026-08-12 era mesmo a conta ser CPF — não tinha outro requisito escondido.
+  Suporte Asaas confirmou o caminho: `POST /myAccount/commercialInfo` com
+  `personType: "JURIDICA"` (reenviando *todos* os campos — omitir um zera os
+  outros) muda o tipo da conta; `POST /sandbox/myAccount/approve` força a
+  aprovação no sandbox sem esperar análise manual. Depois disso `POST /accounts`
+  (`criarSubconta`) devolveu subconta de verdade com `walletId`, e uma cobrança
+  `BOLETO` com `split: [{ walletId, fixedValue }]` voltou com o objeto `split`
+  preenchido (`status: "PENDING"`, `totalValue` batendo com `fixedValue`). O
+  contrato de `AsaasSplit` e `criarSubconta` está confirmado, não só documentado.
+  **Efeito colateral real, não hipotético:** migrar PF→PJ apaga a chave Pix da
+  conta (`GET /pix/addressKeys` foi a 0 registros depois da migração;
+  `POST /payments` com `billingType: "PIX"` passou a devolver
+  `invalid_billingType: "Não há nenhuma chave Pix disponível"`). Precisou de
+  `POST /pix/addressKeys` com `{"type":"EVP"}` pra gerar chave nova e destravar
+  PIX de novo — confirmado com uma cobrança PIX depois. Como essa é a **mesma
+  conta sandbox** que Morux/Nortis/Vitta usam pra testar, qualquer nova migração
+  de tipo de conta nela quebra PIX de todo mundo até alguém recriar a chave.
 - **Assinaturas rodaram contra o sandbox em 2026-08-12** (v0.6.1): `criarAssinatura`
   PIX/`MONTHLY` volta `ACTIVE` e **já nasce com a primeira cobrança**, então
   `listarCobrancasDaAssinatura` devolve 1 item na hora — o `if (!primeira)` dos
@@ -209,7 +223,7 @@ supunha. Em 2026-08-12 a resposta real confirmou o envelope:
 página — a assinatura de teste tinha 1 cobrança, então `hasMore: false`. O laço
 de `listarCobrancasDaAssinatura` com mais de 100 itens continua sem execução real.
 
-O que ainda não rodou contra API nenhuma: **subconta e split** (barrados por conta
-CPF), **cartão de crédito de fato** (a cobrança `CREDIT_CARD` foi criada, mas
-nenhum pagamento foi tokenizado ou capturado) e o **timeout** de 30s, que só foi
-provado em stub. Ao mexer nesses, o contrato vem da documentação, não de prova.
+O que ainda não rodou contra API nenhuma: **cartão de crédito de fato** (a
+cobrança `CREDIT_CARD` foi criada, mas nenhum pagamento foi tokenizado ou
+capturado) e o **timeout** de 30s, que só foi provado em stub. Ao mexer nesses,
+o contrato vem da documentação, não de prova.
